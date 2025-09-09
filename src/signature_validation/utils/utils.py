@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import warnings
 from math import floor, log10
 from pathlib import Path
-from typing import Iterable, List, Literal, Optional, Tuple, Union
+from typing import Any, Iterable, List, Literal, Optional, Tuple, Union
 
 import gspread
 import numpy as np
@@ -13,6 +15,28 @@ from statsmodels.robust.scale import mad
 from statsmodels.stats.multitest import multipletests
 
 RANDOM_SEED = 42
+
+
+def item_series(
+    item: Any,
+    indexed: Optional[Union[pd.Series, int]] = None,
+) -> pd.Series:
+    """
+    Creates a series filled with item with indexes from indexed (if Series-like) or numerical indexes (size=indexed)
+    :param item: value for filling
+    :param indexed:
+    :return:
+    """
+    if indexed is not None:
+        if hasattr(indexed, "index"):
+            return pd.Series(
+                [item] * len(indexed), index=indexed.index, dtype=type(item)
+            )
+        elif type(indexed) is int and indexed > 0:
+            return pd.Series(
+                [item] * indexed, index=np.arange(indexed), dtype=type(item)
+            )
+    return pd.Series(dtype="object")
 
 
 def sort_by_terms_order(
@@ -122,9 +146,9 @@ def process_generic_dataset(
     return out, out_stdev, out_mw
 
 
-def get_expression_table(cohort, log=True):
+def get_expression_table(cohort, log=True, internal_data_path=str | Path):
     """
-    Reads expression table from S3 and returns it as a pandas DataFrame.
+    Reads expression table and returns it as a pandas DataFrame.
 
     Parameters
     ----------
@@ -132,6 +156,8 @@ def get_expression_table(cohort, log=True):
         Name of the cohort.
     log : bool
         Whether to take the logarithm of the expression values. Default to True.
+    internal_data_path : str
+        Path to the internal data directory.
 
     Returns
     -------
@@ -140,18 +166,15 @@ def get_expression_table(cohort, log=True):
     """
     if log:
         return np.log2(
-            read_dataset(f"/internal_data/mvp-data/cohorts/{cohort}/expressions.tsv")
-            + 1
+            read_dataset(f"/{internal_data_path}/{cohort}/expressions.tsv") + 1
         ).T
     else:
-        return read_dataset(
-            f"/internal_data/mvp-data/cohorts/{cohort}/expressions.tsv"
-        ).T
+        return read_dataset(f"/{internal_data_path}/{cohort}/expressions.tsv").T
 
 
 def get_anno(cohort):
     """
-    Reads annotation data from S3 and returns it as a pandas DataFrame.
+    Reads annotation data and returns it as a pandas DataFrame.
 
     Parameters
     ----------

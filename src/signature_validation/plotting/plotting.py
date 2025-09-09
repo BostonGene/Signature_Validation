@@ -1,6 +1,5 @@
+import itertools
 import warnings
-from itertools import repeat
-from itertools.chain import from_iterable
 from pathlib import Path
 from typing import Any, Dict, Generator, List, Literal, Optional, Tuple, Union
 
@@ -97,6 +96,9 @@ cells_p = {
     "Epithelial_cells": "#DFD3CF",
     "Muscles": "#DF714B",
     "Bones": "#96A4B3",
+    "Epithelium": "#DFD3CF",
+    "Pericytes_and_smooth_muscle": "#CC7A00",
+    "Glial_cells": "#995B00",
 }
 
 
@@ -921,8 +923,14 @@ def gene_corr_plot(genes: List[str], df: pd.DataFrame, diag: str) -> None:
     data["KDE"] = "Gene"
 
     data2 = pd.Series(
-        data=list(from_iterable(repeat(df.mean(), len(df.index)))),
-        index=list(from_iterable(repeat(x, len(df.columns)) for x in df.index)),
+        data=list(
+            itertools.chain.from_iterable(itertools.repeat(df.mean(), len(df.index)))
+        ),
+        index=list(
+            itertools.chain.from_iterable(
+                itertools.repeat(x, len(df.columns)) for x in df.index
+            )
+        ),
         name="value",
     )
 
@@ -1725,7 +1733,7 @@ def plot_scatter_with_ci_agg(
     metric_y: str = "F1",
     title: Optional[str] = None,
     random_score: float = 0.5,
-    path: Optional[pathlib.Path] = None,
+    path: Optional[Path] = None,
     xlabel: Optional[str] = None,
     ylabel: Optional[str] = None,
 ):
