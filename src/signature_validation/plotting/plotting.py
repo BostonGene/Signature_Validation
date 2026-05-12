@@ -2099,3 +2099,168 @@ def grouped_boxplot_with_pvalue(
         ax.set_xlabel(xlabel)
 
     return ax
+
+
+class cells_color:
+    """Inline colour namespace ported from bioreactor.use_colors."""
+
+    darkslategray = "#2f4f4f"
+    forestgreen = "#228b22"
+    maroon2 = "#7f0000"
+    navy = "#000080"
+    darkorange = "#ff8c00"
+    lime = "#00ff00"
+    aqua = "#00ffff"
+    fuchsia = "#ff00ff"
+    dodgerblue = "#1e90ff"
+    laserlemon = "#ffff54"
+    peachpuff = "#ffdab9"
+    hotpink = "#ff69b4"
+    electric_violet = "#8F00FF"
+    fire_engine_red = "#CE2029"
+    citron = "#9FA91F"
+    swamp_green = "#728400"
+    dark_silver = "#746D69"
+
+
+def axis_matras(
+    ys: List[float],
+    title: str = "",
+    x_len: float = 8,
+    title_y: float = 1,
+    sharex: bool = True,
+):
+    """Iterator over vertically stacked subplots with relative heights ys.
+
+    Parameters
+    ----------
+    ys : list of float
+        Relative heights of each subplot row.
+    title : str
+        Figure suptitle.
+    x_len : float
+        Figure width in inches.
+    title_y : float
+        Vertical position of the suptitle (1.0 = top).
+    sharex : bool
+        Whether subplots share the x-axis.
+
+    Returns
+    -------
+    numpy.flatiter
+        Flat iterator over the created Axes.
+    """
+    fig, axs = plt.subplots(
+        len(ys),
+        1,
+        figsize=(x_len, float(np.sum(ys))),
+        gridspec_kw={"height_ratios": ys},
+        sharex=sharex,
+    )
+    fig.suptitle(title, y=title_y)
+    for ax in axs:
+        ax.tick_params(axis="x", which="minor", length=0)
+    return axs.flat
+
+
+def line_annotation_plot(
+    color_vector: pd.Series,
+    ax: Optional[plt.Axes] = None,
+    nan_color: str = "#ffffff",
+    offset: float = 0,
+    hide_ticks: bool = True,
+    hide_borders: bool = True,
+) -> plt.Axes:
+    """One-row coloured strip annotation.
+
+    Parameters
+    ----------
+    color_vector : pd.Series
+        Per-item hex colours (already mapped); NaNs are filled with `nan_color`.
+    ax : matplotlib.axes.Axes, optional
+        Target axis; a new figure is created when None.
+    nan_color : str
+        Hex colour used for NaN entries.
+    offset : float
+        Horizontal offset for bars.
+    hide_ticks : bool
+        Hide tick marks if True.
+    hide_borders : bool
+        Hide axis spines if True.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+    """
+    if ax is None:
+        _, ax = plt.subplots(figsize=(max(len(color_vector) / 15.0, 6), 0.5))
+
+    items_amount = len(color_vector)
+    xss = np.arange(items_amount) - offset
+    yss = pd.Series([1] * items_amount, index=color_vector.index)
+
+    with sns.axes_style("white"):
+        ax.bar(
+            xss,
+            yss,
+            color=color_vector.fillna(nan_color),
+            width=1,
+            align="edge",
+            edgecolor=color_vector.fillna(nan_color),
+        )
+
+    ax.set_ylim(0, 1)
+    ax.set_xlim(0, items_amount)
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    ax.xaxis.label.set_visible(False)
+    ax.set_ylabel(
+        color_vector.name, rotation=0, labelpad=10, va="center", ha="right"
+    )
+
+    if hide_ticks:
+        ax.tick_params(length=0)
+
+    if hide_borders:
+        for spine in ("bottom", "top", "left", "right"):
+            ax.spines[spine].set_visible(False)
+
+    return ax
+
+
+def line_palette_annotation_plot(
+    val_vector: pd.Series,
+    palette: Dict[Any, str],
+    ax: Optional[plt.Axes] = None,
+    nan_color: str = "#ffffff",
+    hide_ticks: bool = True,
+    hide_borders: bool = True,
+    **kwargs: Any,
+) -> plt.Axes:
+    """Map categorical `val_vector` through `palette`, then draw a line annotation.
+
+    Parameters
+    ----------
+    val_vector : pd.Series
+        Categorical values (one per item).
+    palette : dict
+        Mapping ``category -> hex colour``.
+    ax : matplotlib.axes.Axes, optional
+    nan_color : str
+        Colour for unmapped or NaN categories.
+    hide_ticks, hide_borders : bool
+    **kwargs
+        Forwarded to :func:`line_annotation_plot`.
+
+    Returns
+    -------
+    matplotlib.axes.Axes
+    """
+    return line_annotation_plot(
+        val_vector.map(palette),
+        ax=ax,
+        nan_color=nan_color,
+        hide_ticks=hide_ticks,
+        hide_borders=hide_borders,
+        **kwargs,
+    )
