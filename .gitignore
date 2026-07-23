@@ -163,3 +163,5 @@ cython_debug/
 plan.md
 research.md
 CLAUDE.md
+
+.claude/

@@ -396,7 +396,7 @@ def read_expressions(
     gene_subset: Union[None, List[str]] = None,
     suf: str = "-kallisto-Xena-gene-TPM_without_noncoding.tsv",
     sample_type: str = "Sample",
-    path: Union[str, Path] = "/interna_data/Databases/Deconvolution/",
+    path: Union[str, Path] = "/internal_data/Databases/Deconvolution/",
 ) -> pd.DataFrame:
     """
     Function for reading expressions from a database directory on and performing filtering and aggregation based on sample annotations.
@@ -404,7 +404,7 @@ def read_expressions(
     :param gene_subset: A list of gene names to include in the analysis. If None (default), all genes will be included in the output.
     :param suf: A suffix string that represents the file format of the gene expression data files in the database directory.
     :param sample_type: A string indicating the type of sample annotation, default "Sample".
-    :param path: The path to the database directory, default "/interna_data/Deconvolution/" --sharing by request
+    :param path: The path to the database directory, default "/internal_data/Deconvolution/" --sharing by request
     :return: A pd.DataFrame containing the aggregated gene expression data for the specified samples.
     """
     path = Path(path)
