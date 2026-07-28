@@ -216,7 +216,11 @@ def get_metric_for_signature(
     else:
         thr = thresholds[np.argmin(np.sqrt((0 - fpr) ** 2 + (1 - tpr) ** 2))]
     roc_auc = metrics.auc(fpr, tpr)
-    y_pred_bin = pd.cut(y_pred, bins=[-1, thr, 777], labels=[0, 1])
+    # `thr` can be `np.inf` (sklearn's synthetic "reject everything" threshold,
+    # `roc_curve`'s `thresholds[0]`) when that's the optimal operating point on a
+    # degenerate ROC curve (e.g. tiny bootstrap samples) — a fixed-bin `pd.cut`
+    # then breaks on non-monotonic bins. Thresholding directly handles any `thr`.
+    y_pred_bin = (y_pred > thr).astype(int)
     f1 = metrics.f1_score(y_test_bin, y_pred_bin, average="weighted")
     accuracy = metrics.accuracy_score(y_test_bin, y_pred_bin)
     recall_score = metrics.recall_score(y_test_bin, y_pred_bin)

@@ -187,7 +187,9 @@ def load_new_cohort_annotation(
     The file is already filtered by ``Technical_QC == True`` and
     ``Decision_deconvolution_without_parent != False`` and the rename to
     pipeline names is already applied (per OD-128 ticket); the rename pass here
-    is idempotent and defensive.
+    is idempotent and defensive. ``Cell_type`` is stripped of leading/trailing
+    whitespace before renaming, since raw labels can carry stray whitespace
+    (e.g. ``"T_helper_1 "``) that silently breaks an exact-match ``.replace()``.
 
     Parameters
     ----------
@@ -218,8 +220,9 @@ def load_new_cohort_annotation(
             f"new-cohort annotation at {path} lacks 'Dataset' column "
             "(required by signature_validation.utils.utils.read_expressions)"
         )
+    annot = annot.copy()
+    annot["Cell_type"] = annot["Cell_type"].str.strip()
     if apply_rename:
-        annot = annot.copy()
         annot["Cell_type"] = annot["Cell_type"].replace(rename_map or RENAME_NEW_TO_OLD)
     logger.info(
         "loaded {n} samples across {k} cell types from {p}",
