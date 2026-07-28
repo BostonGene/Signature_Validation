@@ -31,6 +31,7 @@ dependencies = [
   "boto3>=1.34,<1.36",
   "s3fs>=2024.6,<2024.11",
   "aiobotocore>=2.13,<2.16",
+  "zarr>=3",
 ]
 
 [tool.setuptools.packages.find]
