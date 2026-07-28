@@ -53,7 +53,6 @@ MAP_RAW: Dict[str, List[str]] = {
     "Main4_Endothelium": ["Endothelium"],
     "Main4_Pan_macrophage_signature": ["Macrophages"],
     "Main4_NK_cells": ["NK_cells"],
-    "Main4_M1_signatures": ["Macrophages_M1"],
     "Main4_M2_signature": ["Macrophages_M2"],
     "Main4_T_cells": ["T_cells"],
     "Main4_CD4_T_cells": ["CD4_T_cells"],
@@ -138,7 +137,6 @@ CONTROLS_TO_DELETE: Dict[str, List[str]] = {
     "Main4_B_cells": ["Plasma_B_cells", "Non_plasma_B_cells", "Plasmablasts"],
     "Main4_Endothelium": ["Endothelium_lymph"],
     "Main4_NK_cells": [],
-    "Main4_M1_signatures": ["Macrophages", "Myeloid_cells", "Monocytes"],
     "Main4_M2_signature": ["Macrophages", "Myeloid_cells", "Monocytes"],
     "Main4_T_cells": [
         "CD4_T_helpers",

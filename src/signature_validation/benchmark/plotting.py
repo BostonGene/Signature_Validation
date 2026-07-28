@@ -117,7 +117,6 @@ YTICK_FGES_LABEL: Dict[str, str] = {
     "Main4_Endothelium": "Endothelial cells Fges",
     "Main4_Pan_macrophage_signature": "Macrophages Fges",
     "Main4_NK_cells": "NK cells Fges",
-    "Main4_M1_signatures": "M1 Macrophages Fges",
     "Main4_M2_signature": "M2 Macrophages Fges",
     "Main4_Mast_cell_signature": "Mast cells Fges",
     "Main4_Follicular_helper_T_cells": "Tfh cells Fges",
