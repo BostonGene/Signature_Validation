@@ -174,3 +174,7 @@ Data/sorted_cells_to_check_all_annot.tsv
 Data/msigdb_gmt.pkl
 # downloaded expressions (osrp) if ever synced locally
 expr_local/
+
+# CHESS-1336 validation — generated plot/pkl artifacts, kept OUT of git for now
+# (regenerated each run, too large for GitHub; synced to s3://bostongene-iml-immune-escape-028257207274-data/data/SignVal/)
+Paper_Code_and_Figures/Figure_4/Cell_type_FGES_comparison/plots/
