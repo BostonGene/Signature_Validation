@@ -22,7 +22,11 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from signature_validation.benchmark.cohorts import EXCLUDED_FGES_RARE
+from signature_validation.benchmark.cohorts import (
+    CONTROLS_ORDER,
+    EXCLUDED_FGES_RARE,
+    MAP_RAW,
+)
 from signature_validation.plotting.plotting import (
     axis_matras,
     boxplot_with_pvalue,
@@ -35,6 +39,10 @@ from signature_validation.ssgsea_calc.ssgsea_calc import GeneSet
 from signature_validation.utils.utils import median_scale, sort_by_terms_order
 
 DEFAULT_CMAP = matplotlib.cm.coolwarm
+
+# Trailing group that lumps every non-cell-of-interest into one annotation block.
+OTHER_CONTROLS_LABEL = "Other controls"
+OTHER_CONTROLS_COLOR = "#B0B0B0"
 
 RARE_FGES_KEYS: Tuple[str, ...] = tuple(sorted(EXCLUDED_FGES_RARE))
 RARE_CELL_TYPES: Tuple[str, ...] = (
@@ -157,6 +165,7 @@ def plot_violin_per_source(
     suffix: str = "_new_cohort",
     rare_cell_types: Sequence[str] = RARE_CELL_TYPES,
     rare_fges: Sequence[str] = RARE_FGES_KEYS,
+    mark_rare: bool = False,
 ) -> None:
     """Per-source ssGSEA violin plot, separately for GOI and Control samples.
 
@@ -173,6 +182,9 @@ def plot_violin_per_source(
     suffix : str
     rare_cell_types : sequence of str
     rare_fges : sequence of str
+    mark_rare : bool
+        When ``True`` decorate rare-source x-labels with ``*``; when ``False``
+        (default) the rare/CV asterisks are stripped from the figure.
     """
     save_dir = Path(save_dir)
     rare_cell_types_set = set(rare_cell_types)
@@ -257,7 +269,7 @@ def plot_violin_per_source(
     fig, ax = plt.subplots(figsize=(20, 5))
     order_goi = [f"{s}_GOI" for s in VIOLIN_SOURCE_ORDER]
     pretty_goi = [
-        _star_label(f"{p} Fges,\ncell type of interest", f"{s}_GOI" in rare_marked_goi)
+        _star_label(f"{p} Fges,\ncell type of interest", mark_rare and f"{s}_GOI" in rare_marked_goi)
         for s, p in zip(VIOLIN_SOURCE_ORDER, VIOLIN_PRETTY)
     ]
     boxplot_with_pvalue(
@@ -292,7 +304,7 @@ def plot_violin_per_source(
     fig, ax = plt.subplots(figsize=(20, 5))
     order_ctrl = [f"{s}_CONTROL" for s in VIOLIN_SOURCE_ORDER]
     pretty_ctrl = [
-        _star_label(f"{p} Fges,\ncontrol types", f"{s}_CONTROL" in rare_marked_ctrl)
+        _star_label(f"{p} Fges,\ncontrol types", mark_rare and f"{s}_CONTROL" in rare_marked_ctrl)
         for s, p in zip(VIOLIN_SOURCE_ORDER, VIOLIN_PRETTY)
     ]
     boxplot_with_pvalue(
@@ -372,11 +384,17 @@ def plot_signature_heatmap(
     save_path: Union[str, Path] = "signature_heatmap.svg",
     short: bool = True,
     rare_fges: Sequence[str] = RARE_FGES_KEYS,
+    main_cell_types: Optional[Sequence[str]] = None,
+    mark_rare: bool = False,
 ) -> None:
     """Median-scaled signature × cell-type heatmap with cell-type annotation strip.
 
     Direct port of v1 cells 71-83. Each FGES contributes its top-5 signatures
-    by Cohen's d; rare-FGES rows are starred in ``yticks``.
+    by Cohen's d; rare-FGES rows are starred in ``yticks`` when ``mark_rare``.
+
+    The annotation strip keeps only the "cells of interest"
+    (``main_cell_types``) as individual column blocks and lumps every other
+    cell type into one trailing :data:`OTHER_CONTROLS_LABEL` block.
 
     Parameters
     ----------
@@ -387,12 +405,22 @@ def plot_signature_heatmap(
     annotation : pd.DataFrame
         Sample-indexed, ``Cell_type`` column.
     controls_order : sequence of str
+        Retained for downstream use; on-figure grouping follows the
+        ``main_cell_types`` / "Other controls" scheme instead.
     palette : dict, optional
         Cell-type → colour. Defaults to :data:`signature_validation.plotting.plotting.cells_p`.
     save_path : str or Path
     short : bool
         Use top-5-by-Cohen's-d slice (True) or all signatures (False).
     rare_fges : sequence of str
+    main_cell_types : sequence of str, optional
+        Cell types kept as individual column blocks. When ``None``, derived as
+        the ordered union of :data:`MAP_RAW` GOI cell types present in the
+        cohort, ordered by their index in :data:`CONTROLS_ORDER` (types absent
+        from ``CONTROLS_ORDER`` go last, in first-seen order).
+    mark_rare : bool
+        When ``True`` star rare-FGES rows in ``yticks``; when ``False``
+        (default) the rare/CV asterisks are stripped from the figure.
     """
     palette = palette or {ct: cells_p.get(ct, "#777777") for ct in controls_order}
     rare_fges_set = set(rare_fges)
@@ -423,13 +451,45 @@ def plot_signature_heatmap(
     else:
         df_used = df_full
 
-    so = sort_by_terms_order(sample_cell_type, list(controls_order))
+    present_set = set(sample_cell_type.tolist())
+
+    if main_cell_types is None:
+        goi_union: List[str] = []
+        for gois in MAP_RAW.values():
+            for ct in gois:
+                if ct not in goi_union:
+                    goi_union.append(ct)
+        candidates = [ct for ct in goi_union if ct in present_set]
+        in_order = [ct for ct in CONTROLS_ORDER if ct in candidates]
+        extras = [ct for ct in candidates if ct not in CONTROLS_ORDER]
+        main_cell_types = in_order + extras
+
+    main_present = [ct for ct in main_cell_types if ct in present_set]
+    main_set = set(main_present)
+
+    # Lump every non-cell-of-interest into a single trailing "Other controls".
+    grouped_cell_type = sample_cell_type.where(
+        sample_cell_type.isin(main_set), other=OTHER_CONTROLS_LABEL
+    )
+    has_other = bool((~sample_cell_type.isin(main_set)).any())
+
+    column_order = list(main_present)
+    if has_other:
+        column_order.append(OTHER_CONTROLS_LABEL)
+
+    heatmap_palette = {
+        ct: (palette.get(ct) or cells_p.get(ct, "#777777")) for ct in main_present
+    }
+    if has_other:
+        heatmap_palette[OTHER_CONTROLS_LABEL] = OTHER_CONTROLS_COLOR
+
+    so = sort_by_terms_order(grouped_cell_type, column_order)
 
     data = median_scale(df_used.T).clip(-2, 2)
     yticks = [
         _star_label(
             YTICK_FGES_LABEL[i] if i in YTICK_FGES_LABEL else _msigdb_yticklabel(i),
-            i in rare_fges_set,
+            mark_rare and i in rare_fges_set,
         )
         for i in data.index
     ]
@@ -445,7 +505,7 @@ def plot_signature_heatmap(
     ]
     af = axis_matras(panel_heights, x_len=15)
     ax = next(af)
-    line_palette_annotation_plot(sample_cell_type[so], palette, ax=ax)
+    line_palette_annotation_plot(grouped_cell_type[so], heatmap_palette, ax=ax)
     ax.set_ylabel("Cell\ntypes")
 
     for i in range(len(slices) - 1):
@@ -484,6 +544,7 @@ def plot_sens_spec_scatter(
     save_dir: Union[str, Path],
     suffix: str = "_new_cohort",
     rare_fges: Sequence[str] = RARE_FGES_KEYS,
+    mark_rare: bool = False,
 ) -> Dict[str, Any]:
     """Per-FGES sens/spec scatter + per-source averaged scatter.
 
@@ -498,6 +559,9 @@ def plot_sens_spec_scatter(
     save_dir : str or Path
     suffix : str
     rare_fges : sequence of str
+    mark_rare : bool
+        When ``True`` append the rare-FGES ``(*)`` title suffix; when ``False``
+        (default) that suffix is suppressed.
 
     Returns
     -------
@@ -582,7 +646,7 @@ def plot_sens_spec_scatter(
             gnames = ""
         gnames = gnames.replace("_", " ")
         title = f"{signname} FGESs' specificity and sensitivity comparison\nGOI{gnames}"
-        if sign in rare_fges_set:
+        if mark_rare and sign in rare_fges_set:
             title += " (*)"
         ax.set_title(title)
 

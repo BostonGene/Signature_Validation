@@ -13,13 +13,19 @@ from signature_validation.benchmark.cohorts import (
     CONTROLS_TO_DELETE,
     EXCLUDED_FGES_RARE,
     MAP_RAW,
+    PARENT_TO_DAUGHTER,
     RENAME_NEW_TO_OLD,
     build_mapping,
     intersect_controls_with_cohort,
     load_new_cohort_annotation,
     load_new_cohort_expressions,
 )
+from signature_validation.benchmark.metrics import (
+    compute_fges_metrics,
+    plot_f1_cv_scatters,
+)
 from signature_validation.benchmark.scoring import (
+    clean_parent_daughter_goi,
     compute_mapping_ssgseas,
     compute_out_table,
     fdr_correct_out,
@@ -34,15 +40,24 @@ from signature_validation.benchmark.splits import (
     aggregate_score_over_splits,
     stratified_holdout_indices,
 )
+from signature_validation.benchmark.tables import (
+    build_dataset_list_table,
+    build_fges_performance_tables,
+)
 
 __all__ = [
     "CONTROLS_ORDER",
     "CONTROLS_TO_DELETE",
     "EXCLUDED_FGES_RARE",
     "MAP_RAW",
+    "PARENT_TO_DAUGHTER",
     "RENAME_NEW_TO_OLD",
     "aggregate_score_over_splits",
+    "build_dataset_list_table",
+    "build_fges_performance_tables",
     "build_mapping",
+    "clean_parent_daughter_goi",
+    "compute_fges_metrics",
     "compute_mapping_ssgseas",
     "compute_out_table",
     "count_random_fges",
@@ -52,6 +67,7 @@ __all__ = [
     "load_new_cohort_annotation",
     "load_new_cohort_expressions",
     "load_v1_msigdb_gmt",
+    "plot_f1_cv_scatters",
     "select_msigdb_gmt_subset",
     "stratified_holdout_indices",
 ]

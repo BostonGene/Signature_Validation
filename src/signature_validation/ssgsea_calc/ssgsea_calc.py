@@ -1,5 +1,6 @@
 import re
 import warnings
+from functools import lru_cache
 from typing import Dict, List, Literal, Set
 
 import mygene
@@ -240,6 +241,31 @@ def ssgsea_formula(
     ).T
 
 
+@lru_cache(maxsize=4)
+def _load_source_reference_gmt(
+    path: str = "./data/msigdb.v2023.1.Hs.symbols.gmt",
+) -> dict:
+    """Cached read of the MSigDb reference GMT for :func:`detect_fges_source`.
+
+    ``detect_fges_source`` only needs this ~29 MB file for its final
+    ``MSigDb_Other`` fallback, yet re-reading it on every call makes bulk
+    classification (thousands of sub-signatures for the Supplement tables)
+    pathologically slow. Cache it per resolved path per process.
+
+    Parameters
+    ----------
+    path : str
+        Path to the MSigDb symbols GMT. Default resolves relative to the caller's
+        working directory (the published-notebook convention).
+
+    Returns
+    -------
+    dict
+        ``{geneset_name: GeneSet}`` as returned by :func:`read_gene_sets`.
+    """
+    return read_gene_sets(path)
+
+
 def detect_fges_source(fges: str) -> Literal[
     "Internal",
     "Random_FGES",
@@ -287,7 +313,7 @@ def detect_fges_source(fges: str) -> Literal[
         - MSigDb_Other
         - Other
     """
-    all_msigdb_gmt = read_gene_sets("./data/msigdb.v2023.1.Hs.symbols.gmt")
+    all_msigdb_gmt = _load_source_reference_gmt()
 
     sc_source = [
         "HE_LIM_SUN_FETAL_LUNG_",

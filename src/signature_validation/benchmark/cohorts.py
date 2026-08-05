@@ -176,6 +176,34 @@ CONTROLS_TO_DELETE: Dict[str, List[str]] = {
     ],
 }
 
+# v1 Scater_plots cell 16: for each parent FGES, the daughter FGES whose
+# sub-signature columns must be stripped out of the parent's GOI frames before
+# scoring/ranking (a signature shared by parent and daughter would otherwise be
+# double-counted, and — in ``compute_out_table`` — silently overwritten by the
+# last FGES processed). Daughters not present in the in-scope run are skipped by
+# the cleaner. Kept identical to v1 so macrophage/monocyte rows match the paper.
+PARENT_TO_DAUGHTER: Dict[str, List[str]] = {
+    "Main4_T_cells": [
+        "Main4_Th17_signature",
+        "Main4_Th1_signature",
+        "Main4_CD8_T_cells",
+        "Main4_Treg",
+        "Main4_Effector_cells",
+        "Main4_CD4_T_cells",
+        "Main4_Follicular_helper_T_cells",
+    ],
+    "Main4_CD4_T_cells": [
+        "Main4_Th17_signature",
+        "Main4_Th1_signature",
+        "Main4_Follicular_helper_T_cells",
+        "Main4_Treg",
+    ],
+    "Main4_B_cells": ["Main4_Plasma_cells"],
+    "Main4_Pan_macrophage_signature": ["Main4_M2_signature"],
+    "Main4_Monocyte": ["Main4_Pan_macrophage_signature", "Main4_M2_signature"],
+    "Main4_Endothelium": ["Main4_Lymphatic_endothelium"],
+}
+
 
 def load_new_cohort_annotation(
     path: Union[str, Path],

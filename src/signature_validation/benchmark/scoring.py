@@ -72,6 +72,62 @@ def compute_mapping_ssgseas(
     return out
 
 
+def clean_parent_daughter_goi(
+    mapping_ssgseas: Dict[str, Dict[str, Dict[str, pd.DataFrame]]],
+    parent_to_daughter: Dict[str, List[str]],
+) -> Dict[str, Dict[str, Dict[str, pd.DataFrame]]]:
+    """Strip daughter-FGES sub-signature columns out of each parent's GOI frames.
+
+    Port of v1 ``Scater_plots.ipynb`` cell 16. A sub-signature that qualifies for
+    both a parent FGES (e.g. ``Main4_Pan_macrophage_signature``) and one of its
+    daughters (e.g. ``Main4_M2_signature``) appears under the same column name in
+    both; leaving it in the parent's GOI double-counts it in the metric loop and,
+    in :func:`compute_out_table`, lets the last-processed FGES overwrite the
+    shared row. Removing it from the parent resolves both. Daughters absent from
+    ``mapping_ssgseas`` (rare/out-of-scope FGES) are skipped.
+
+    The input is not mutated; a new nested dict is returned (immutability rule).
+
+    Parameters
+    ----------
+    mapping_ssgseas : dict
+        Output of :func:`compute_mapping_ssgseas`.
+    parent_to_daughter : dict
+        ``{parent_FGES: [daughter_FGES, ...]}``, e.g.
+        :data:`signature_validation.benchmark.cohorts.PARENT_TO_DAUGHTER`.
+
+    Returns
+    -------
+    dict
+        A copy of ``mapping_ssgseas`` with parent GOI frames pruned of daughter
+        sub-signature columns.
+    """
+    cleaned: Dict[str, Dict[str, Dict[str, pd.DataFrame]]] = {
+        sign: {group: dict(frames) for group, frames in groups.items()}
+        for sign, groups in mapping_ssgseas.items()
+    }
+    for parent, daughters in parent_to_daughter.items():
+        if parent not in cleaned:
+            continue
+        daughter_columns: set[str] = set()
+        for daughter in daughters:
+            if daughter not in mapping_ssgseas:
+                continue
+            for frame in mapping_ssgseas[daughter]["Goi"].values():
+                daughter_columns.update(frame.columns)
+        if not daughter_columns:
+            continue
+        for ct, frame in cleaned[parent]["Goi"].items():
+            keep = [c for c in frame.columns if c not in daughter_columns]
+            cleaned[parent]["Goi"][ct] = frame[keep]
+        logger.info(
+            "cleaned {parent}: removed {n} daughter columns from GOI",
+            parent=parent,
+            n=len(daughter_columns),
+        )
+    return cleaned
+
+
 def compute_out_table(
     mapping_ssgseas: Dict[str, Dict[str, Dict[str, pd.DataFrame]]],
     mapping: Dict[str, Dict[str, List[str]]],
