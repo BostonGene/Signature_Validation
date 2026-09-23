@@ -961,9 +961,9 @@ def genes_expression_chart_(
     axes: Optional[Tuple[matplotlib.axes.Axes, ...]] = None,
     figsize: Tuple[int, int] = (12, 8),
     source: Optional[Literal["lines", "cells", "tissues", "all"]] = None,
-    path_to_cells: str = "/internal_data/Deconvolution/Data/Median_Cells_by_sample-kallisto-Xena-gene-TPM_without_noncoding",
-    path_to_lines: str = "/internal_data/Deconvolution/Data/Median_Cancer_cell_lines_by_sample-kallisto-Xena-gene-TPM_without_noncoding",
-    path_to_tissues: str = "/internal_data/Deconvolution/Data/Mean_Tissues_by_sample-kallisto-Xena-gene-TPM_without_noncoding.tsv",
+    path_to_cells: str = "<PATH_TO_MEDIAN_CELLS_EXPRESSION_CSV>",
+    path_to_lines: str = "<PATH_TO_MEDIAN_CELL_LINES_EXPRESSION_CSV>",
+    path_to_tissues: str = "<PATH_TO_MEAN_TISSUES_EXPRESSION_TSV>",
 ) -> pd.DataFrame:
     """
     Function makes chart of genes expression from all sources

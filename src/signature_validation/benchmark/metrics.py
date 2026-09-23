@@ -9,8 +9,8 @@ Faithful port of the reference ``Scater_plots.ipynb`` cells:
 
 The notebook relied on module-level globals (``mapping_ssgseas``, ``msigdb_gmt``,
 ``public_cells_annot``, ``ranked_expr``, ``pipeline_genes``). Here they are
-injected as keyword arguments so the code runs on the new-cohort objects and off
-the BostonGene cluster.
+injected as keyword arguments so the code runs on the new-cohort objects
+without the original data environment.
 """
 
 from __future__ import annotations

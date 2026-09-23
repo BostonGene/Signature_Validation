@@ -172,7 +172,7 @@ def get_expression_table(cohort, log=True, internal_data_path=str | Path):
         return read_dataset(f"/{internal_data_path}/{cohort}/expressions.tsv").T
 
 
-def get_anno(cohort):
+def get_anno(cohort, cohorts_dir: str | Path = "<PATH_TO_COHORTS_DIR>"):
     """
     Reads annotation data and returns it as a pandas DataFrame.
 
@@ -180,23 +180,27 @@ def get_anno(cohort):
     ----------
     cohort : str
         Name of the cohort.
+    cohorts_dir : str or Path
+        Directory with one sub-directory per cohort.
 
     Returns
     -------
     annotation : pandas.DataFrame
         A DataFrame with samples as columns and annotation features as rows.
     """
-    return read_dataset(f"/internal_data/mvp-data/cohorts/{cohort}/annotation.tsv").T
+    return read_dataset(Path(cohorts_dir) / cohort / "annotation.tsv").T
 
 
-def get_deconv(cohort):
+def get_deconv(cohort, cohorts_dir: str | Path = "<PATH_TO_COHORTS_DIR>"):
     """
-    Reads deconvolution data from S3 and returns it as a pandas DataFrame.
+    Reads deconvolution data and returns it as a pandas DataFrame.
 
     Parameters
     ----------
     cohort : str
         Name of the cohort.
+    cohorts_dir : str or Path
+        Directory with one sub-directory per cohort.
 
     Returns
     -------
@@ -204,7 +208,7 @@ def get_deconv(cohort):
         A DataFrame with samples as columns and cell types as rows.
     """
     return read_dataset(
-        f"/internal_data/mvp-data/cohorts/{cohort}/deconvolution/cells_deconvolution_rna_percent.tsv"
+        Path(cohorts_dir) / cohort / "deconvolution" / "cells_deconvolution_rna_percent.tsv"
     ).T
 
 
@@ -264,7 +268,7 @@ def get_gspread(table, sheet, index_col=0, path_to_json=None):
     """
 
     if path_to_json == None:
-        path_to_json = "/uftp/Blood/google_secret.json"
+        path_to_json = "<PATH_TO_GOOGLE_SERVICE_ACCOUNT_JSON>"
 
     credentials = ServiceAccountCredentials.from_json_keyfile_name(
         path_to_json
@@ -396,7 +400,7 @@ def read_expressions(
     gene_subset: Union[None, List[str]] = None,
     suf: str = "-kallisto-Xena-gene-TPM_without_noncoding.tsv",
     sample_type: str = "Sample",
-    path: Union[str, Path] = "/internal_data/Databases/Deconvolution/",
+    path: Union[str, Path] = "<PATH_TO_EXPRESSION_DATABASE_DIR>",
 ) -> pd.DataFrame:
     """
     Function for reading expressions from a database directory on and performing filtering and aggregation based on sample annotations.
@@ -404,7 +408,7 @@ def read_expressions(
     :param gene_subset: A list of gene names to include in the analysis. If None (default), all genes will be included in the output.
     :param suf: A suffix string that represents the file format of the gene expression data files in the database directory.
     :param sample_type: A string indicating the type of sample annotation, default "Sample".
-    :param path: The path to the database directory, default "/internal_data/Deconvolution/" --sharing by request
+    :param path: The path to the database directory (available on request)
     :return: A pd.DataFrame containing the aggregated gene expression data for the specified samples.
     """
     path = Path(path)

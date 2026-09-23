@@ -1,9 +1,7 @@
 """FGES selection and quality-metric helpers.
 
-Originally relied on module-level reads from ``/internal_data`` and an undefined
-``p`` variable, which broke ``import signature_validation.utils.fges_utils`` off
-the BostonGene cluster. The data are now loaded lazily on first use, so the
-module imports cleanly anywhere.
+Reference data are loaded lazily on first use from ``internal_data_dir``, so the
+module imports cleanly without the data present.
 """
 
 from __future__ import annotations
@@ -23,7 +21,7 @@ from signature_validation.utils.utils import (
     scale_series,
 )
 
-_INTERNAL_DATA_DEFAULT = Path("/internal_data")
+_INTERNAL_DATA_DEFAULT = Path("<PATH_TO_INTERNAL_DATA_DIR>")
 
 _msigdb_gmt_cache: Optional[Dict[str, Dict[str, Any]]] = None
 _public_cells_cache: Optional[
@@ -34,7 +32,7 @@ _public_cells_cache: Optional[
 def _load_msigdb_gmt(
     internal_data_dir: Path = _INTERNAL_DATA_DEFAULT,
 ) -> Dict[str, Dict[str, Any]]:
-    """Lazy: load and cache the MSigDb GMT pickle from the internal-data mount."""
+    """Lazy: load and cache the MSigDb GMT pickle from ``internal_data_dir``."""
     global _msigdb_gmt_cache
     if _msigdb_gmt_cache is None:
         with open(internal_data_dir / "msigdb_gmt.pkl", "rb") as handle:
@@ -45,7 +43,7 @@ def _load_msigdb_gmt(
 def _load_public_cells(
     internal_data_dir: Path = _INTERNAL_DATA_DEFAULT,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str]]:
-    """Lazy: load (annot, log2 expr, pct ranks, gene list) from the internal mount."""
+    """Lazy: load (annot, log2 expr, pct ranks, gene list) from ``internal_data_dir``."""
     global _public_cells_cache
     if _public_cells_cache is None:
         annot = read_dataset(internal_data_dir / "public_cells_annot.tsv.gz")
