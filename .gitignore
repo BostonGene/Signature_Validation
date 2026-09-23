@@ -178,3 +178,6 @@ Data/sorted_cells_to_check_all_annot.tsv
 Data/msigdb_gmt.pkl
 # downloaded expressions if ever synced locally
 expr_local/
+
+# Per-cell predictions for an internal sample: available on request, never tracked
+Data/azimuth_pred_RS0154_s3_NSCLC.tsv
