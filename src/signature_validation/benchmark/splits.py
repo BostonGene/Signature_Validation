@@ -1,6 +1,6 @@
 """Stratified holdout splits for the rare-types rerun.
 
-Per Q5 of the OD-128 plan: 10 repeated holdouts with stratification by
+Design: 10 repeated holdouts with stratification by
 (signature score relative to its median) × (GOI / Control). For rare GOIs
 (Th17, Endothelium_lymph, Eosinophils, Plasma_B/Plasmablasts) the test fold
 is the only one that feeds the figures, and per-fold scores are averaged.

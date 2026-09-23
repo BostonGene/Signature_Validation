@@ -1,8 +1,6 @@
-"""Cell-type signature benchmark on the new sorted-cell test cohort (CHESS-1333 / OD-128).
+"""Cell-type signature benchmark on the new sorted-cell test cohort.
 
-The pipeline mirrors the published Figure 4 notebook
-(``Paper_Code_and_Figures/Figure_4/Cell_type_FGES_comparison/mapping_ssgseas/Signatures comparison.ipynb``)
-but reads the new test cohort delivered with Jira OD-128 and reuses the v1
+The pipeline mirrors the published (v1) Figure 4 analysis but reads the new test cohort and reuses the v1
 GMT (``msigdb_gmt.pkl``) so chess_db / MSigDb / public / random gene lists are
 byte-identical to the published run; only the ssGSEA scoring is rerun on the
 new cohort.

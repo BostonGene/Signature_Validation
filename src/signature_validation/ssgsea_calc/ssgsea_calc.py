@@ -49,6 +49,13 @@ class GeneSet(object):
         return "{}\t{}\t{}".format(self.name, self.descr, "\t".join(self.genes))
 
 
+# Only these mygene fields are actually consumed downstream: `alias` (by
+# update_gene_names) and the three dropna keys below. Requesting `fields="all"`
+# makes mygene.info return payloads large enough that the server routinely drops
+# the connection mid-stream ("incomplete chunked read") on gene-set-sized batches.
+MYGENE_FIELDS = "alias,HGNC,type_of_gene,map_location"
+
+
 def query_genes_by_symbol(genes: List[str], verbose: bool = False) -> pd.DataFrame:
     """
     :param genes:
@@ -64,7 +71,7 @@ def query_genes_by_symbol(genes: List[str], verbose: bool = False) -> pd.DataFra
         verbose=verbose,
         df_index=True,
         scopes=["symbol"],
-        fields="all",
+        fields=MYGENE_FIELDS,
     )
     try:
         q.dropna(subset=["HGNC"], inplace=True)

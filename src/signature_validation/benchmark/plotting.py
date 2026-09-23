@@ -17,10 +17,12 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 import matplotlib
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import seaborn as sns
+from scipy.stats import mannwhitneyu, wilcoxon
 
 from signature_validation.benchmark.cohorts import (
     CONTROLS_ORDER,
@@ -36,7 +38,12 @@ from signature_validation.plotting.plotting import (
     patch_plot,
 )
 from signature_validation.ssgsea_calc.ssgsea_calc import GeneSet
-from signature_validation.utils.utils import median_scale, sort_by_terms_order
+from signature_validation.utils.utils import (
+    get_pvalue_string,
+    median_scale,
+    sort_by_terms_order,
+    to_common_samples,
+)
 
 DEFAULT_CMAP = matplotlib.cm.coolwarm
 
@@ -113,6 +120,44 @@ VIOLIN_PRETTY: Tuple[str, ...] = (
     "Other MSigDb",
     "Random",
 )
+
+# Combined GOI+Control box plot (v2 of plot_violin_per_source): GOI boxes are
+# solid, Control boxes of the same source share the same fill colour but carry
+# this hatch instead of a different colour.
+CONTROL_HATCH = "//"
+
+# Everything below is the Okabe-Ito colourblind-safe set, checked all-pairs with
+# a validator rather than picked by eye: the worst pair is #D55E00 vs #009E73 at
+# deuteranopic ΔE 11.0 (OKLab x100), comfortably over the ΔE 8 target, and the
+# worst normal-vision pair is #D55E00 vs #E69F00 at ΔE 15.6.
+
+# Combined box plot fill by *population*, not by signature source: the figure's
+# question is GOI vs Control, so that is what the fill encodes. The orange sits
+# below 3:1 against a white surface, which is why the Control boxes also keep
+# CONTROL_HATCH and a black edge — texture, not colour alone, carries them into
+# print and forced-colour rendering.
+GOI_BOX_COLOR = "#0072B2"
+CONTROL_BOX_COLOR = "#E69F00"
+
+# BG-signature median reference lines: both red, as the figure calls for. Two
+# red lines on one axis can only be told apart by their dash pattern, so here
+# the pattern — not the colour — is what marks which population each one is.
+BG_MEDIAN_COLOR = "#D55E00"
+BG_GOI_MEDIAN_STYLE = "--"
+BG_CONTROL_MEDIAN_STYLE = "-."
+
+# Bracket colour encodes the TEST, not the population: Mann-Whitney (GOI vs
+# Control within one source) in black at the bottom, paired Wilcoxon (adjacent
+# sources) in green at the top. The Wilcoxon row is drawn twice — once across
+# the GOI boxes, once across the Control boxes — and both rows are green because
+# they are the same test; their x-position is what says which population.
+MW_BRACKET_COLOR = "#000000"
+WILCOXON_BRACKET_COLOR = "#009E73"
+
+# Marker area for the internal (BG) FGES star in the sens/spec scatter. Set
+# independently of the CV-derived sizes used for the external-source circles
+# (32-144 pt^2), so the star stays legible on top of them.
+INTERNAL_STAR_SIZE = 450.0
 
 YTICK_FGES_LABEL: Dict[str, str] = {
     "Main4_Th1_signature": "Th1 cells Fges",
@@ -336,6 +381,441 @@ def plot_violin_per_source(
     plt.close(fig)
 
 
+def _source_sample_means(
+    mapping_ssgseas: Dict[str, Dict[str, Dict[str, pd.DataFrame]]],
+    group: str,
+) -> Dict[str, Dict[str, pd.Series]]:
+    """Per-sample score of every source, averaged over that source's sub-signatures.
+
+    A source contributes many sub-signatures per FGES, so "source A vs. source
+    B on the same samples" is only well defined once each source is reduced to
+    one value per (FGES, sample) — otherwise the pairing would have to pick an
+    arbitrary sub-signature on each side, and pooling the full cross product
+    would duplicate each sample once per sub-signature (pseudo-replication).
+
+    Parameters
+    ----------
+    mapping_ssgseas : dict
+    group : str
+        ``"Goi"`` or ``"Control"`` — which sample population to reduce.
+
+    Returns
+    -------
+    dict
+        ``{source: {fges: Series indexed by sample}}``.
+    """
+    out: Dict[str, Dict[str, pd.Series]] = {}
+    for sign, groups in mapping_ssgseas.items():
+        frames = groups.get(group, {})
+        if not frames:
+            continue
+        df = pd.concat(frames.values())
+        df = df[~df.index.duplicated(keep="first")]
+        by_source: Dict[str, List[str]] = {}
+        for signat in df.columns:
+            source = "BG" if signat == sign else _classify_signature(signat)
+            by_source.setdefault(source, []).append(signat)
+        for source, cols in by_source.items():
+            series = df[cols].mean(axis=1).dropna()
+            if not series.empty:
+                out.setdefault(source, {})[sign] = series
+    return out
+
+
+def _paired_neighbour_pvalues(
+    mapping_ssgseas: Dict[str, Dict[str, Dict[str, pd.DataFrame]]],
+    group: str,
+    sources: Sequence[str],
+) -> Dict[Tuple[str, str], float]:
+    """Paired-Wilcoxon p-value for each *adjacent* pair in ``sources``.
+
+    Samples are matched within every FGES (the ``to_common_samples`` +
+    ``wilcoxon`` pattern of the Section T stats table) on the per-source means
+    of :func:`_source_sample_means`, then pooled across FGES. Only neighbouring
+    sources are tested: the all-vs-BG variant produced one bracket per source,
+    which stacked into a bracket tower taller than the data panel itself.
+
+    Parameters
+    ----------
+    mapping_ssgseas : dict
+    group : str
+        ``"Goi"`` or ``"Control"``.
+    sources : sequence of str
+        Sources in plotting order; consecutive entries are compared.
+
+    Returns
+    -------
+    dict
+        ``{(left, right): pvalue}`` for every adjacent pair with paired samples.
+    """
+    means = _source_sample_means(mapping_ssgseas, group)
+    pvalues: Dict[Tuple[str, str], float] = {}
+    for left, right in zip(sources, sources[1:]):
+        xs: List[pd.Series] = []
+        ys: List[pd.Series] = []
+        for fges, x_full in means.get(left, {}).items():
+            y_full = means.get(right, {}).get(fges)
+            if y_full is None:
+                continue
+            x, y = to_common_samples((x_full, y_full))
+            if len(x) == 0:
+                continue
+            xs.append(x)
+            ys.append(y)
+        if not xs:
+            continue
+        try:
+            pvalues[(left, right)] = wilcoxon(pd.concat(xs), pd.concat(ys)).pvalue
+        except ValueError:
+            pvalues[(left, right)] = 1.0
+    return pvalues
+
+
+def _draw_bracket(
+    ax: matplotlib.axes.Axes,
+    x1: float,
+    x2: float,
+    y: float,
+    pvalue: float,
+    color: str,
+    tick: float,
+    above: bool = True,
+    fontsize: float = 9,
+    inset: float = 0.12,
+) -> None:
+    """Draw one p-value bracket as a plain three-segment line.
+
+    The horizontal bar sits at ``y`` with two short legs of length ``tick``
+    (data units) pointing *towards* the boxes and the label on the far side;
+    ``above`` flips the whole thing for brackets drawn below the boxes.
+    ``inset`` shortens the bar at both ends so that a chain of adjacent-pair
+    brackets sharing endpoints (source 1-2, 2-3, 3-4 ...) reads as separate
+    brackets rather than one long line.
+
+    The first implementation used ``connectionstyle="bar,fraction=..."``, whose
+    bar height scales with the x-distance between the compared boxes — brackets
+    spanning the whole axis ended up several data units tall and ran off the
+    figure.
+    """
+    direction = 1.0 if above else -1.0
+    x_left, x_right = min(x1, x2) + inset, max(x1, x2) - inset
+    ax.plot(
+        [x_left, x_left, x_right, x_right],
+        [y - direction * tick, y, y, y - direction * tick],
+        lw=1.0,
+        color=color,
+        solid_capstyle="butt",
+        zorder=5,
+    )
+    ax.text(
+        (x_left + x_right) / 2,
+        y + direction * tick * 0.4,
+        get_pvalue_string(pvalue, p_digits=3, stars=True),
+        fontsize=fontsize,
+        color=color,
+        ha="center",
+        va="bottom" if above else "top",
+        zorder=6,
+    )
+
+
+def plot_combined_box_per_source(
+    mapping_ssgseas: Dict[str, Dict[str, Dict[str, pd.DataFrame]]],
+    save_dir: Union[str, Path],
+    suffix: str = "_new_cohort",
+    provenance: Optional[Dict[str, Dict[str, Dict[str, str]]]] = None,
+    swarm: bool = False,
+) -> Optional[Dict[str, str]]:
+    """One combined GOI+Control box plot per signature source.
+
+    "Combined" is meant in two senses. Vertically, it replaces the two separate
+    ``plot_violin_per_source`` panels (one for GOI samples, one for Control
+    samples) with a single panel: for every source in
+    :data:`VIOLIN_SOURCE_ORDER` (BG first, then the external sources), a GOI
+    box sits immediately next to a Control box. Fill encodes the population, not
+    the source — :data:`GOI_BOX_COLOR` vs :data:`CONTROL_BOX_COLOR`, the latter
+    also hatched (:data:`CONTROL_HATCH`) so the pair survives greyscale and
+    colour-vision deficiency. Horizontally, one box pools *every* FGES and
+    *every* sub-signature attributed to that source — this is a per-source
+    summary, not a per-FGES one.
+
+    Each *pair* carries one x-label naming the source and both counts: ``N``
+    distinct samples and, in parentheses, the number of plotted points (roughly
+    samples × sub-signatures of that source, summed over the FGES that have
+    any), for the GOI and the Control box in turn.
+
+    Two independent significance tests are drawn on the same axis:
+
+    - Mann-Whitney U, GOI vs. Control of the *same* source (different samples,
+      same signature family) — one bracket per source, below the boxes.
+    - Paired Wilcoxon between *adjacent* sources on the **GOI** samples, matched
+      sample-by-sample within each FGES on the per-source means of
+      :func:`_source_sample_means` — one bracket per neighbouring pair, above
+      the boxes (e.g. internal vs WikiPathways). Neighbours only: comparing
+      every source against BG needed a bracket tower taller than the data panel.
+
+    The BG signature's own GOI and Control medians are drawn as two red dashed
+    reference lines (:data:`BG_MEDIAN_COLOR`), told apart by dash pattern:
+    :data:`BG_GOI_MEDIAN_STYLE` vs :data:`BG_CONTROL_MEDIAN_STYLE`.
+
+    Parameters
+    ----------
+    mapping_ssgseas : dict
+        Output of :func:`signature_validation.benchmark.scoring.compute_mapping_ssgseas`
+        (optionally crossval-backfilled).
+    save_dir : str or Path
+    suffix : str
+    provenance : dict, optional
+        Output of :func:`signature_validation.benchmark.crossval.backfill_rare_cell_types`.
+        When given, the cell types substituted from the cross-validation
+        pickle are listed in a caption under the plot so the figure's data
+        provenance is explicit per cell type.
+    swarm : bool
+        Overlay individual sample points. Off by default — this plot already
+        pools every FGES per source, so a swarm is usually too dense to read.
+
+    Returns
+    -------
+    dict or None
+        ``{cell_type: "true_holdout" | "cross_validation"}`` derived from
+        ``provenance`` (``None`` if ``provenance`` was not given).
+    """
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    bg_goi: List[pd.Series] = []
+    bg_ctrl: List[pd.Series] = []
+    other_goi: List[pd.Series] = []
+    other_ctrl: List[pd.Series] = []
+    # Distinct sample ids behind each box. The plotted point count is
+    # samples x sub-signatures, so it is not a sample size — keep both.
+    box_samples: Dict[str, set] = {}
+
+    for sign, groups in mapping_ssgseas.items():
+        if not groups["Goi"] or not groups["Control"]:
+            continue
+        goi_df = pd.concat(groups["Goi"].values())
+        control_df = pd.concat(groups["Control"].values())
+        for signat in goi_df.columns:
+            is_bg = signat == sign
+            source = "BG" if is_bg else _classify_signature(signat)
+            box_samples.setdefault(f"{source}_GOI", set()).update(goi_df.index)
+            box_samples.setdefault(f"{source}_CONTROL", set()).update(control_df.index)
+            x_goi = goi_df[signat].copy()
+            x_goi.index = x_goi.index.map(lambda s: f"{s}_{signat}_{sign}_goi")
+            x_ctrl = control_df[signat].copy()
+            x_ctrl.index = x_ctrl.index.map(lambda s: f"{s}_{signat}_{sign}_control")
+            if is_bg:
+                bg_goi.append(x_goi)
+                bg_ctrl.append(x_ctrl)
+            else:
+                other_goi.append(x_goi)
+                other_ctrl.append(x_ctrl)
+
+    if not bg_goi:
+        return None
+
+    bg_goi_s = pd.concat(bg_goi)
+    other_goi_s = pd.concat(other_goi) if other_goi else pd.Series(dtype=float)
+    bg_ctrl_s = pd.concat(bg_ctrl)
+    other_ctrl_s = pd.concat(other_ctrl) if other_ctrl else pd.Series(dtype=float)
+
+    bg_goi_s.index = bg_goi_s.index.map(lambda s: f"{s}_BG_Goi")
+    other_goi_s.index = other_goi_s.index.map(lambda s: f"{s}_Oth_Goi")
+    bg_ctrl_s.index = bg_ctrl_s.index.map(lambda s: f"{s}_BG_Cont")
+    other_ctrl_s.index = other_ctrl_s.index.map(lambda s: f"{s}_Oth_Cont")
+
+    labels = pd.concat(
+        [
+            pd.Series(index=bg_goi_s.index, data="BG_GOI"),
+            pd.Series(index=other_goi_s.index, data="MSIG_GOI"),
+            pd.Series(index=bg_ctrl_s.index, data="BG_CONTROL"),
+            pd.Series(index=other_ctrl_s.index, data="MSIG_CONTROL"),
+        ]
+    )
+    sign_data = pd.concat([bg_goi_s, other_goi_s, bg_ctrl_s, other_ctrl_s])
+
+    labels = labels[~labels.index.duplicated()]
+    sign_data = sign_data[~sign_data.index.duplicated()].astype("float32")
+
+    for source in ("XCELL", "PETITPREZ", "BINDEA", "NIRMAL", "BIOCARTA", "KEGG", "GOBP", "RANDOM"):
+        goi_mask = labels.index.to_series().str.contains(source) & labels.index.to_series().str.contains("Goi")
+        ctrl_mask = labels.index.to_series().str.contains(source) & labels.index.to_series().str.contains("Cont")
+        labels.loc[goi_mask] = f"{source}_GOI"
+        labels.loc[ctrl_mask] = f"{source}_CONTROL"
+
+    sources_present = [s for s in VIOLIN_SOURCE_ORDER if (labels == f"{s}_GOI").any() or (labels == f"{s}_CONTROL").any()]
+    order: List[str] = []
+    palette: Dict[str, str] = {}
+    # One label per *pair* of boxes, centred between them, carrying both sample
+    # counts — two half-labels under two adjacent boxes read as four unrelated
+    # columns and hid that the pair is one comparison.
+    pretty_labels: List[str] = []
+    for s, p in zip(VIOLIN_SOURCE_ORDER, VIOLIN_PRETTY):
+        if s not in sources_present:
+            continue
+        counts: Dict[str, Tuple[int, int]] = {}
+        for suf, tag in (("_GOI", "GOI"), ("_CONTROL", "Control")):
+            key = f"{s}{suf}"
+            order.append(key)
+            palette[key] = GOI_BOX_COLOR if suf == "_GOI" else CONTROL_BOX_COLOR
+            counts[tag] = (
+                len(box_samples.get(key, ())),
+                int((labels == key).sum()),
+            )
+        pretty_labels.append(
+            f"{p}\n"
+            f"N GOI={counts['GOI'][0]:,} ({counts['GOI'][1]:,} pts)\n"
+            f"N Control={counts['Control'][0]:,} ({counts['Control'][1]:,} pts)"
+        )
+
+    fig, ax = plt.subplots(figsize=(1.6 * len(order), 8))
+    sns.boxplot(
+        y=sign_data,
+        x=labels,
+        ax=ax,
+        palette=palette,
+        order=order,
+        fliersize=0,
+    )
+    if swarm:
+        sns.swarmplot(y=sign_data, x=labels, ax=ax, color=".25", order=order, s=3)
+    for pos, key in enumerate(order):
+        if key.endswith("_CONTROL"):
+            ax.patches[pos].set_hatch(CONTROL_HATCH)
+            ax.patches[pos].set_edgecolor("black")
+    # Pin the ticks before relabelling: seaborn leaves an auto locator, and
+    # set_xticklabels alone then warns that the labels may end up mislabelled.
+    # One tick per pair, sitting between the two boxes it names (0.5, 2.5, ...).
+    ax.set_xticks([2 * i + 0.5 for i in range(len(pretty_labels))])
+    ax.set_xticklabels(pretty_labels, rotation=90, fontsize=9)
+    ax.set_xlabel("")
+    ax.set_ylabel("Unscaled ssGSEA score")
+    ax.set_title(
+        "Cell type Fges, GOI vs Control — combined over all FGES, per signature source\n"
+        "one box = every sub-signature of that source in every FGES; "
+        "N = distinct samples, (n pts) = plotted values; "
+        "bracket colour = statistical test",
+        fontsize=11,
+    )
+
+    if (labels == "BG_GOI").any():
+        ax.axhline(
+            y=sign_data[labels == "BG_GOI"].median(),
+            color=BG_MEDIAN_COLOR,
+            linestyle=BG_GOI_MEDIAN_STYLE,
+            alpha=0.8,
+            zorder=0,
+        )
+    if (labels == "BG_CONTROL").any():
+        ax.axhline(
+            y=sign_data[labels == "BG_CONTROL"].median(),
+            color=BG_MEDIAN_COLOR,
+            linestyle=BG_CONTROL_MEDIAN_STYLE,
+            alpha=0.8,
+            zorder=0,
+        )
+
+    y_min, y_max = ax.get_ylim()
+    effective_size = y_max - y_min
+    tick = effective_size * 0.015
+
+    # Bottom brackets: Mann-Whitney U, GOI vs Control of the same source. These
+    # already join neighbouring boxes, so a single row is enough.
+    mw_y = y_min - effective_size * 0.05
+    for s in sources_present:
+        i_goi, i_ctrl = order.index(f"{s}_GOI"), order.index(f"{s}_CONTROL")
+        goi_vals = sign_data[labels == f"{s}_GOI"]
+        ctrl_vals = sign_data[labels == f"{s}_CONTROL"]
+        try:
+            pv = mannwhitneyu(goi_vals, ctrl_vals, alternative="two-sided").pvalue if len(goi_vals) and len(ctrl_vals) else 1.0
+        except ValueError:
+            pv = 1.0
+        _draw_bracket(ax, i_goi, i_ctrl, mw_y, pv, MW_BRACKET_COLOR, tick, above=False)
+
+    # Top brackets: paired Wilcoxon between neighbouring sources (e.g. internal
+    # vs WikiPathways), one row across the GOI boxes and one across the Control
+    # boxes. Both rows are WILCOXON_BRACKET_COLOR — colour names the *test*, so
+    # one test never shows up in two colours; the rows are told apart by their
+    # x-offset, GOI boxes sitting at 0-2-4... and Control at 1-3-5...
+    top_step = effective_size * 0.09
+    top_base = y_max + effective_size * 0.03
+    for row, (group, suf) in enumerate((("Goi", "_GOI"), ("Control", "_CONTROL"))):
+        pvalues = _paired_neighbour_pvalues(mapping_ssgseas, group, sources_present)
+        for (left, right), pv in pvalues.items():
+            keys = (f"{left}{suf}", f"{right}{suf}")
+            if not all(k in order for k in keys):
+                continue
+            _draw_bracket(
+                ax,
+                order.index(keys[0]),
+                order.index(keys[1]),
+                top_base + row * top_step,
+                pv,
+                WILCOXON_BRACKET_COLOR,
+                tick,
+                above=True,
+            )
+
+    ax.set_ylim(mw_y - effective_size * 0.06, top_base + 2 * top_step)
+
+    # Legend grouped the way the encodings are: first what a box is, then what a
+    # bracket colour means, then the reference lines.
+    legend_handles = [
+        mpatches.Patch(facecolor=GOI_BOX_COLOR, edgecolor="black", label="GOI samples"),
+        mpatches.Patch(
+            facecolor=CONTROL_BOX_COLOR,
+            edgecolor="black",
+            hatch=CONTROL_HATCH,
+            label="Control samples",
+        ),
+        plt.Line2D(
+            [0], [0],
+            color=MW_BRACKET_COLOR, linewidth=2,
+            label="Mann-Whitney U — GOI vs Control, same source",
+        ),
+        plt.Line2D(
+            [0], [0],
+            color=WILCOXON_BRACKET_COLOR, linewidth=2,
+            label="Paired Wilcoxon — adjacent sources (upper row: GOI, lower: Control)",
+        ),
+        plt.Line2D(
+            [0], [0],
+            color=BG_MEDIAN_COLOR, linestyle=BG_GOI_MEDIAN_STYLE,
+            label="Internal (BG) GOI median",
+        ),
+        plt.Line2D(
+            [0], [0],
+            color=BG_MEDIAN_COLOR, linestyle=BG_CONTROL_MEDIAN_STYLE,
+            label="Internal (BG) Control median",
+        ),
+    ]
+    ax.legend(handles=legend_handles, bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=9)
+
+    ct_provenance: Optional[Dict[str, str]] = None
+    if provenance:
+        ct_provenance = {}
+        for _, groups in provenance.items():
+            for group in ("Goi", "Control", "Deleted_controls"):
+                for ct, prov in groups.get(group, {}).items():
+                    ct_provenance[ct] = prov
+        cv_cts = sorted(ct for ct, prov in ct_provenance.items() if prov == "cross_validation")
+        merged_cts = sorted(ct for ct, prov in ct_provenance.items() if prov == "merged")
+        caption = (
+            "Cross-validation-derived cell types (no samples in the true validation cohort): "
+            + (", ".join(cv_cts) if cv_cts else "none")
+            + ". Cell types pooling test and train samples (<20 true-cohort samples): "
+            + (", ".join(merged_cts) if merged_cts else "none")
+            + ". All other cell types: true holdout."
+        )
+        fig.text(0.01, -0.02, caption, fontsize=9, ha="left", va="top", wrap=True)
+
+    plt.tight_layout(pad=0.4)
+    fig.savefig(save_dir / f"box_comparison_combined{suffix}.svg", format="svg", bbox_inches="tight")
+    plt.close(fig)
+    return ct_provenance
+
+
 def _build_short_df_index(
     out_df: pd.DataFrame,
     mapping: Dict[str, Dict[str, List[str]]],
@@ -526,7 +1006,7 @@ def plot_signature_heatmap(
     plt.tight_layout(pad=0.2)
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(save_path, format=save_path.suffix.lstrip(".") or "svg")
+    plt.savefig(save_path, format="png", dpi=300)
     plt.close()
 
 
@@ -608,24 +1088,40 @@ def plot_sens_spec_scatter(
             1, 3, figsize=(7.5, 5), gridspec_kw={"width_ratios": [2, 15, 0.5]}
         )
 
+        internal_points: List[Tuple[float, float]] = []
         for signat in sensitivity.index[::-1]:
-            color = DIF_SOURCES_PAL["BG"] if signat == sign else DIF_SOURCES_PAL[
-                _scatter_source_for_signature(signat)
-            ]
-            marker = "*" if signat == sign else "o"
-            ax.scatter(
-                specificity.loc[signat],
-                sensitivity.loc[signat],
-                s=sizes_q.get(signat, 80.0),
-                c=color,
-                marker=marker,
-                edgecolors="white",
-                linewidths=1,
-                alpha=0.7,
-            )
+            if signat == sign:
+                # internal (BG) FGES is drawn separately below with its own size
+                internal_points.append(
+                    (float(specificity.loc[signat]), float(sensitivity.loc[signat]))
+                )
+            else:
+                ax.scatter(
+                    specificity.loc[signat],
+                    sensitivity.loc[signat],
+                    s=sizes_q.get(signat, 80.0),
+                    c=DIF_SOURCES_PAL[_scatter_source_for_signature(signat)],
+                    marker="o",
+                    edgecolors="white",
+                    linewidths=1,
+                    alpha=0.7,
+                )
             src = "BG" if signat == sign else _scatter_source_for_signature(signat)
             averaged[sign]["Sensitivity"][src].append((signat, float(sensitivity.loc[signat])))
             averaged[sign]["Specificity"][src].append((signat, float(specificity.loc[signat])))
+
+        if internal_points:
+            ax.scatter(
+                [p[0] for p in internal_points],
+                [p[1] for p in internal_points],
+                s=INTERNAL_STAR_SIZE,
+                c=DIF_SOURCES_PAL["BG"],
+                marker="*",
+                edgecolors="black",
+                linewidths=0.8,
+                alpha=0.95,
+                zorder=5,
+            )
 
         ax.set_ylabel("Sensitivity: normalized ssGSEA score in GOI")
         ax.set_xlabel(

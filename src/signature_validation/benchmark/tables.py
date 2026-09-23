@@ -1,13 +1,15 @@
 """Supplementary summary tables for the new-cohort cell-type FGES benchmark.
 
-Two deliverables (CHESS-1333 / OD-128):
+Two deliverables:
 
 1. :func:`build_fges_performance_tables` — one per-FGES ranking table (paper
    Supplement S4) that couples the classification metrics (mean over seeds of
    ``fges_metrics``) with the pooled GOI / Control ssGSEA means and BH-corrected
    Mann–Whitney p-values, one row per sub-signature.
-2. :func:`build_dataset_list_table` — a compact dataset inventory (dataset,
-   sample count, cell types) for the methods section.
+2. :func:`build_dataset_list_table` — the per-dataset inventory of Supplement S6.1
+   (dataset accession, scored sample count, train/holdout split, cell types) for
+   the methods section. Counts come from the ssGSEA score matrices rather than the
+   annotation, so they match what the figures actually show.
 
 Both write tab-separated files and return the assembled DataFrame(s).
 """
@@ -15,7 +17,7 @@ Both write tab-separated files and return the assembled DataFrame(s).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -23,7 +25,11 @@ from loguru import logger
 from scipy.stats import mannwhitneyu
 from statsmodels.stats.multitest import multipletests
 
-from signature_validation.benchmark.cohorts import EXCLUDED_FGES_RARE, MAP_RAW
+from signature_validation.benchmark.cohorts import (
+    EXCLUDED_FGES_RARE,
+    HARMONIZE_TRAIN_TO_NEW,
+    MAP_RAW,
+)
 from signature_validation.ssgsea_calc.ssgsea_calc import detect_fges_source
 
 # fges_metrics inner-dict key → output column. Kept explicit so a rename in the
@@ -300,56 +306,146 @@ def _build_row(
     return row
 
 
+def _restrict_to_samples(
+    annotation: pd.DataFrame,
+    samples: Optional[Iterable[str]],
+    label: str,
+) -> pd.DataFrame:
+    """Take the ``Dataset`` / ``Cell_type`` rows of ``samples`` from ``annotation``."""
+    missing = [c for c in ("Dataset", "Cell_type") if c not in annotation.columns]
+    if missing:
+        raise ValueError(
+            f"{label} annotation is missing required column(s): {', '.join(missing)}"
+        )
+
+    frame = annotation[["Dataset", "Cell_type"]].copy()
+    frame.index = frame.index.astype(str)
+    frame = frame[~frame.index.duplicated()]
+    if samples is None:
+        return frame
+
+    wanted = {str(s) for s in samples}
+    kept = frame.loc[sorted(wanted & set(frame.index))]
+    if kept.empty:
+        raise ValueError(
+            f"{label}: none of the {len(wanted)} requested samples are present in the "
+            "annotation — check that the sample-ID namespaces match"
+        )
+    if len(kept) < len(wanted):
+        logger.warning(
+            "{l}: {n} of {t} sample(s) absent from the annotation and not counted",
+            l=label,
+            n=len(wanted) - len(kept),
+            t=len(wanted),
+        )
+    return kept
+
+
 def build_dataset_list_table(
     annotation: pd.DataFrame,
     save_path: Union[str, Path],
+    holdout_samples: Optional[Iterable[str]] = None,
+    train_samples: Optional[Iterable[str]] = None,
+    train_annotation: Optional[pd.DataFrame] = None,
+    cell_type_rename: Optional[Dict[str, str]] = HARMONIZE_TRAIN_TO_NEW,
+    sep: str = "; ",
 ) -> pd.DataFrame:
-    """Summarise the cohort as a per-dataset inventory table.
+    """Summarise the benchmark as a per-dataset inventory table (Supplement S6.1).
+
+    Counts are driven by the sample IDs passed in, not by the annotation's row
+    count: a sample reaches the figures only if it carried expression data and got
+    an ssGSEA score, so the score matrices — not the annotation — define the cohort.
+    Pass :func:`signature_validation.benchmark.cohorts.collect_sample_ids` output of
+    each cohort's ``mapping_ssgseas`` and the totals match what the figures show.
 
     Parameters
     ----------
     annotation : pd.DataFrame
-        Sample-indexed annotation with at least ``Dataset`` and ``Cell_type``.
+        Sample-indexed annotation of the holdout cohort, with at least ``Dataset``
+        and ``Cell_type``.
     save_path : str or Path
         Destination TSV path.
+    holdout_samples : iterable of str, optional
+        Holdout sample IDs to count. ``None`` counts every row of ``annotation``
+        (the earlier behaviour, which over-counts by including samples that
+        never reached a figure).
+    train_samples : iterable of str, optional
+        Published train-cohort sample IDs to count. Requires ``train_annotation``.
+        When omitted the table carries holdout counts only and no split columns.
+    train_annotation : pd.DataFrame, optional
+        Sample-indexed ``Dataset`` / ``Cell_type`` for the train cohort, e.g. from
+        :func:`signature_validation.benchmark.cohorts.load_train_annotation`.
+    cell_type_rename : dict, optional
+        Label harmonisation applied to both cohorts, so a population named
+        differently across them is not listed twice. Defaults to
+        :data:`~signature_validation.benchmark.cohorts.HARMONIZE_TRAIN_TO_NEW`;
+        pass ``{}`` to keep the raw labels.
+    sep : str
+        Separator for the ``Cell_types`` column.
 
     Returns
     -------
     pd.DataFrame
-        Columns ``Dataset, N_samples, Cell_types`` sorted by ``N_samples``
+        Columns ``Dataset, N_samples, Cell_types`` — plus ``N_train`` and
+        ``N_holdout`` when a train cohort was supplied — sorted by ``N_samples``
         descending then ``Dataset`` ascending.
 
     Raises
     ------
     ValueError
-        If ``Dataset`` or ``Cell_type`` columns are missing.
+        If a required column is missing, if ``train_samples`` is given without
+        ``train_annotation``, or if a requested sample set does not intersect its
+        annotation at all.
     """
-    missing = [c for c in ("Dataset", "Cell_type") if c not in annotation.columns]
-    if missing:
+    if train_samples is not None and train_annotation is None:
         raise ValueError(
-            f"annotation is missing required column(s): {', '.join(missing)}"
+            "train_samples was given without train_annotation — the train cohort's "
+            "samples cannot be attributed to a dataset without it"
         )
 
     save_path = Path(save_path)
     save_path.parent.mkdir(parents=True, exist_ok=True)
 
-    rows: List[Dict[str, Any]] = []
-    for dataset, group in annotation.groupby("Dataset"):
-        cell_types = sorted(group["Cell_type"].dropna().unique())
-        rows.append(
-            {
-                "Dataset": dataset,
-                "N_samples": len(group),
-                "Cell_types": ", ".join(cell_types),
-            }
-        )
+    parts: List[pd.DataFrame] = []
+    holdout = _restrict_to_samples(annotation, holdout_samples, "holdout")
+    parts.append(holdout.assign(Split="Holdout"))
 
-    table = pd.DataFrame(rows, columns=["Dataset", "N_samples", "Cell_types"])
+    if train_samples is not None:
+        train = _restrict_to_samples(train_annotation, train_samples, "train")
+        parts.append(train.assign(Split="Train"))
+
+    long = pd.concat(parts)
+    if cell_type_rename:
+        long["Cell_type"] = long["Cell_type"].replace(cell_type_rename)
+    long["Dataset"] = long["Dataset"].fillna("Unknown")
+
+    rows: List[Dict[str, Any]] = []
+    for dataset, group in long.groupby("Dataset"):
+        cell_types = sorted(group["Cell_type"].dropna().unique())
+        row: Dict[str, Any] = {
+            "Dataset": dataset,
+            "N_samples": len(group),
+            "Cell_types": sep.join(cell_types),
+        }
+        if train_samples is not None:
+            row["N_train"] = int((group["Split"] == "Train").sum())
+            row["N_holdout"] = int((group["Split"] == "Holdout").sum())
+        rows.append(row)
+
+    columns = ["Dataset", "N_samples"]
+    if train_samples is not None:
+        columns += ["N_train", "N_holdout"]
+    columns += ["Cell_types"]
+
+    table = pd.DataFrame(rows, columns=columns)
     table = table.sort_values(
         ["N_samples", "Dataset"], ascending=[False, True]
     ).reset_index(drop=True)
     table.to_csv(save_path, sep="\t", index=False)
     logger.info(
-        "wrote dataset inventory: {n} datasets → {p}", n=len(table), p=save_path
+        "wrote dataset inventory: {n} datasets, {s} samples → {p}",
+        n=len(table),
+        s=int(table["N_samples"].sum()),
+        p=save_path,
     )
     return table

@@ -1,4 +1,4 @@
-"""FGES quality metrics + F1-vs-CV scatter figures for the new cohort (OD-128).
+"""FGES quality metrics + F1-vs-CV scatter figures for the new cohort.
 
 Faithful port of the reference ``Scater_plots.ipynb`` cells:
 

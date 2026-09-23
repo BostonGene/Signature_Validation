@@ -1,6 +1,6 @@
-"""Cohort assembly for the new sorted-cell test cohort (Jira OD-128, CHESS-1333).
+"""Cohort assembly for the new sorted-cell test cohort.
 
-Functions here load the new annotation / expressions delivered with OD-128 and
+Functions here load the new annotation / expressions and
 build the v1-style ``mapping`` dict (GOI / Control / Deleted_controls per FGES),
 restricted to the 16 in-scope FGES and to the cell types present in the new
 cohort.
@@ -8,8 +8,9 @@ cohort.
 
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -27,15 +28,54 @@ RENAME_NEW_TO_OLD: Dict[str, str] = {
     "Regulatory_CD4_T_cells": "Tregs",
 }
 
-# FGES not covered by this rerun. Th17 / Endothelium_lymph / Eosinophils have
-# no new samples; Plasma_cells has only 3 samples for both Plasma_B_cells and
-# Plasmablasts. They are deferred to a separate rare-types notebook that uses
-# 75/25 holdouts on the original cohort.
+# Cell-type labels that differ between the published (train) cohort and the new
+# (holdout) one but name the same population. Only needed where the two cohorts
+# are put side by side — the per-dataset inventory of Supplement S6.1 — because
+# there the raw labels would list one population twice under two names.
+# ``Follicular_T_helper_tonsil`` is the v1 label; ``Follicular_T_helper`` is the
+# raw new-annotation label that :data:`RENAME_NEW_TO_OLD` already normalises.
+HARMONIZE_TRAIN_TO_NEW: Dict[str, str] = {
+    "Follicular_T_helper_tonsil": "Follicular_T_helpers",
+    "Follicular_T_helper": "Follicular_T_helpers",
+}
+
+# Sample-level annotation behind the published (train) cohort — the table the v1
+# notebook built ``public_cells_annot`` from. Needed to attribute train samples to
+# their source dataset in Supplement S6.1.
+TRAIN_ANNOT_PATH: Path = Path("<PATH_TO_TRAIN_CELLS_ANNOTATION_TSV>")
+
+# FGES with no (or very few) new-cohort samples for their GOI cell type. Not
+# excluded from the validation pipeline: the crossval backfill
+# (see benchmark.crossval) sources these entirely from the cross-validated
+# original-cohort pickle instead, tagged "cross_validation" in provenance.
 EXCLUDED_FGES_RARE: Set[str] = {
     "Main4_Th17_signature",
     "Main4_Lymphatic_endothelium",
     "Main4_Eosinophil_signature",
     "Main4_Plasma_cells",
+}
+
+# GOI / control-deletion definitions for the four FGES above (v1 cell 36-37),
+# merged into MAP_RAW / CONTROLS_TO_DELETE by the validation pipeline so all
+# 19 FGES flow through one uniform <20-sample crossval-backfill rule instead
+# of a separate rare-types rerun.
+MAP_RAW_RARE: Dict[str, List[str]] = {
+    "Main4_Th17_signature": ["Th17_cells"],
+    "Main4_Lymphatic_endothelium": ["Endothelium_lymph"],
+    "Main4_Eosinophil_signature": ["Eosinophils"],
+    "Main4_Plasma_cells": ["Plasma_B_cells", "Plasmablasts"],
+}
+
+CONTROLS_TO_DELETE_RARE: Dict[str, List[str]] = {
+    "Main4_Th17_signature": [
+        "T_cells",
+        "CD4_T_cells",
+        "CD4_T_helpers",
+        "Memory_CD4_T_cells",
+    ],
+    "Main4_Lymphatic_endothelium": ["Endothelium"],
+    "Main4_Eosinophil_signature": ["Myeloid_cells"],
+    "Main4_Plasma_cells": ["B_cells"],
 }
 
 # Per-FGES list of GOI cell types (v1 cell 36, restricted to the 16 in-scope FGES,
@@ -214,7 +254,7 @@ def load_new_cohort_annotation(
 
     The file is already filtered by ``Technical_QC == True`` and
     ``Decision_deconvolution_without_parent != False`` and the rename to
-    pipeline names is already applied (per OD-128 ticket); the rename pass here
+    pipeline names is already applied; the rename pass here
     is idempotent and defensive. ``Cell_type`` is stripped of leading/trailing
     whitespace before renaming, since raw labels can carry stray whitespace
     (e.g. ``"T_helper_1 "``) that silently breaks an exact-match ``.replace()``.
@@ -248,6 +288,23 @@ def load_new_cohort_annotation(
             f"new-cohort annotation at {path} lacks 'Dataset' column "
             "(required by signature_validation.utils.utils.read_expressions)"
         )
+    # The raw TSV carries a few malformed rows with an empty ``Sample`` cell
+    # (shifted columns, ``Technical_QC == False``). They collapse into duplicate
+    # NaN index labels, which later breaks ``annot.Cell_type.reindex(...)`` in
+    # get_strat_cell_type with "cannot reindex on an axis with duplicate labels".
+    missing_id = annot.index.isna()
+    if missing_id.any():
+        logger.warning(
+            "dropping {n} rows with an empty Sample id", n=int(missing_id.sum())
+        )
+        annot = annot[~missing_id]
+    duplicated_id = annot.index.duplicated()
+    if duplicated_id.any():
+        logger.warning(
+            "dropping {n} rows with duplicate Sample ids", n=int(duplicated_id.sum())
+        )
+        annot = annot[~duplicated_id]
+
     annot = annot.copy()
     annot["Cell_type"] = annot["Cell_type"].str.strip()
     if apply_rename:
@@ -369,3 +426,196 @@ def build_mapping(
             "Deleted_controls": deleted,
         }
     return mapping
+
+
+# Published v1 cohort — the training set for everything Figure 4 reports. Any
+# sample of the new cohort that also appears here is not held out.
+OLD_TRAIN_SSGSEAS_PATH: Path = Path("<PATH_TO_TRAIN_MAPPING_SSGSEAS_PKL>")
+
+
+def collect_sample_ids(mapping_ssgseas: Dict) -> Set[str]:
+    """Every sample ID appearing anywhere in a ``mapping_ssgseas`` structure.
+
+    The structure nests ``{FGES: {group: {cell_type: DataFrame}}}`` with sample IDs
+    on the frame index, and the same sample recurs across FGES and groups, so the
+    union over all frames is the cohort's true sample universe — i.e. exactly the
+    samples that got an ssGSEA score and therefore reached the figures.
+
+    Parameters
+    ----------
+    mapping_ssgseas : dict
+        Either cohort's scores: the output of
+        :func:`signature_validation.benchmark.scoring.compute_mapping_ssgseas` or
+        the published pickle loaded from disk.
+
+    Returns
+    -------
+    set of str
+    """
+    samples: Set[str] = set()
+    for groups in mapping_ssgseas.values():
+        if not isinstance(groups, dict):
+            continue
+        for cell_types in groups.values():
+            if not isinstance(cell_types, dict):
+                continue
+            for frame in cell_types.values():
+                samples.update(map(str, frame.index))
+    return samples
+
+
+def load_train_sample_ids(path: Union[str, Path] = OLD_TRAIN_SSGSEAS_PATH) -> Set[str]:
+    """Every sample ID appearing anywhere in the published (train) ssGSEA pickle."""
+    with open(path, "rb") as handle:
+        train_ssgseas = pickle.load(handle)
+
+    samples = collect_sample_ids(train_ssgseas)
+    logger.info("train cohort: {n} unique sample IDs from {p}", n=len(samples), p=path)
+    return samples
+
+
+def load_train_annotation(
+    train_samples: Set[str],
+    path: Union[str, Path] = TRAIN_ANNOT_PATH,
+    fallback_annotation: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Resolve ``Dataset`` / ``Cell_type`` for the published (train) cohort's samples.
+
+    The v1 cohort was assembled from ``cells_all_annotation.tsv`` plus a handful of
+    samples added by hand from Google Sheets (tonsillar Tfh, mast cells), so that
+    table alone does not cover every scored train sample. Those stragglers do appear
+    in the new-cohort annotation, which is why ``fallback_annotation`` exists: pass
+    the validation annotation and the two sources together cover the cohort.
+
+    Parameters
+    ----------
+    train_samples : set of str
+        Sample IDs to resolve, e.g. from :func:`load_train_sample_ids`.
+    path : str or Path
+        Sample-level annotation of the sorted-cell database (:data:`TRAIN_ANNOT_PATH`).
+    fallback_annotation : pd.DataFrame, optional
+        Sample-indexed annotation consulted for IDs missing from ``path``.
+
+    Returns
+    -------
+    pd.DataFrame
+        Indexed by sample ID, columns ``Dataset`` and ``Cell_type``. Rows resolved
+        by neither source carry ``Dataset = "Unknown"`` rather than being dropped,
+        so the sample counts of downstream tables stay complete.
+
+    Raises
+    ------
+    ValueError
+        If the primary annotation lacks ``Dataset`` or ``Cell_type``.
+    """
+    annot = read_dataset(path)
+    if "Sample" in annot.columns and annot.index.name != "Sample":
+        annot = annot.set_index("Sample")
+    missing_cols = [c for c in ("Dataset", "Cell_type") if c not in annot.columns]
+    if missing_cols:
+        raise ValueError(
+            f"train annotation at {path} lacks column(s): {', '.join(missing_cols)}"
+        )
+    annot = annot[~annot.index.isna()]
+    annot = annot[~annot.index.duplicated()]
+    annot.index = annot.index.astype(str)
+
+    wanted = {str(s) for s in train_samples}
+    resolved = annot.loc[sorted(wanted & set(annot.index)), ["Dataset", "Cell_type"]]
+
+    still_missing = sorted(wanted - set(resolved.index))
+    if still_missing and fallback_annotation is not None:
+        fb = fallback_annotation.copy()
+        fb.index = fb.index.astype(str)
+        fb = fb[~fb.index.duplicated()]
+        from_fb = sorted(set(still_missing) & set(fb.index))
+        if from_fb:
+            resolved = pd.concat(
+                [resolved, fb.loc[from_fb, ["Dataset", "Cell_type"]]]
+            )
+            logger.info(
+                "train annotation: {n} sample(s) resolved from the fallback annotation",
+                n=len(from_fb),
+            )
+        still_missing = sorted(set(still_missing) - set(from_fb))
+
+    if still_missing:
+        logger.warning(
+            "train annotation: {n} sample(s) unresolved, Dataset='Unknown': {ids}",
+            n=len(still_missing),
+            ids=still_missing[:20],
+        )
+        resolved = pd.concat(
+            [
+                resolved,
+                pd.DataFrame(
+                    {"Dataset": "Unknown", "Cell_type": np.nan},
+                    index=pd.Index(still_missing),
+                ),
+            ]
+        )
+
+    logger.info(
+        "train annotation: {n}/{t} sample(s) resolved to a dataset",
+        n=int((resolved["Dataset"] != "Unknown").sum()),
+        t=len(wanted),
+    )
+    return resolved
+
+
+def drop_train_samples(
+    annotation: pd.DataFrame,
+    train_ids: Set[str],
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Remove samples that already belong to the published train cohort.
+
+    Without this the "held-out test cohort" partly re-measures the data the
+    signatures were selected on. The overlap is small and concentrated, so the
+    report matters more than the count: it names which cell types shrink, and by
+    how much, which is what decides whether a GOI cohort drops under the
+    crossval-backfill threshold.
+
+    Returns
+    -------
+    (annotation, report)
+        The annotation without the overlapping samples, and a
+        ``cell_type | n_before | n_dropped | n_after`` frame covering only the
+        cell types that actually lost samples.
+    """
+    overlap = annotation.index.astype(str).isin(train_ids)
+    n_dropped = int(overlap.sum())
+    if not n_dropped:
+        logger.info("no train samples found in the annotation — nothing dropped")
+        return annotation, pd.DataFrame(
+            columns=["cell_type", "n_before", "n_dropped", "n_after"]
+        )
+
+    before = annotation["Cell_type"].value_counts()
+    dropped = annotation.loc[overlap, "Cell_type"].value_counts()
+    kept = annotation.loc[~overlap]
+    after = kept["Cell_type"].value_counts()
+
+    report = pd.DataFrame(
+        {
+            "cell_type": dropped.index,
+            "n_before": [int(before.get(ct, 0)) for ct in dropped.index],
+            "n_dropped": [int(dropped[ct]) for ct in dropped.index],
+            "n_after": [int(after.get(ct, 0)) for ct in dropped.index],
+        }
+    ).sort_values("n_dropped", ascending=False, ignore_index=True)
+
+    logger.info(
+        "dropped {n} train samples ({p:.2f}% of the annotation) across {c} cell types",
+        n=n_dropped,
+        p=100.0 * n_dropped / max(len(annotation), 1),
+        c=len(report),
+    )
+    for row in report.itertuples(index=False):
+        logger.info(
+            "  {ct}: {b} → {a} (−{d})",
+            ct=row.cell_type,
+            b=row.n_before,
+            a=row.n_after,
+            d=row.n_dropped,
+        )
+    return kept, report
