@@ -10,7 +10,7 @@ from signature_validation.utils.utils import read_dataset
 def calculate_sample_noise(
     sample: Union[pd.Series, pd.DataFrame],
     readcounts: Union[float, pd.Series],
-    gene_lengths_path=Path("/uftp/gene_data_common/" "gene_length_values.tsv"),
+    gene_lengths_path=Path("<PATH_TO_GENE_LENGTHS_TSV>"),
     alpha=2.05,
 ) -> Union[pd.Series, pd.DataFrame]:
     """

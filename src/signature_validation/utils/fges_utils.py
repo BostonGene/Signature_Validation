@@ -1,5 +1,14 @@
+"""FGES selection and quality-metric helpers.
+
+Reference data are loaded lazily on first use from ``internal_data_dir``, so the
+module imports cleanly without the data present.
+"""
+
+from __future__ import annotations
+
 import pickle
-from typing import Dict, Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -12,16 +21,37 @@ from signature_validation.utils.utils import (
     scale_series,
 )
 
-with open(p / "msigdb_gmt.pkl", "rb") as handle:
-    msigdb_gmt = pickle.load(handle)
+_INTERNAL_DATA_DEFAULT = Path("<PATH_TO_INTERNAL_DATA_DIR>")
 
-public_cells_annot = read_dataset(
-    "/internal_data/public_cells_annot.tsv.gz"
-)  # Sharing by request
-public_cells_expr = read_expressions(public_cells_annot)
-public_cells_expr = np.log2(public_cells_expr + 1)
-pipeline_genes = public_cells_expr.index.to_list()
-ranked_expr = public_cells_expr.rank(pct=True)
+_msigdb_gmt_cache: Optional[Dict[str, Dict[str, Any]]] = None
+_public_cells_cache: Optional[
+    Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str]]
+] = None
+
+
+def _load_msigdb_gmt(
+    internal_data_dir: Path = _INTERNAL_DATA_DEFAULT,
+) -> Dict[str, Dict[str, Any]]:
+    """Lazy: load and cache the MSigDb GMT pickle from ``internal_data_dir``."""
+    global _msigdb_gmt_cache
+    if _msigdb_gmt_cache is None:
+        with open(internal_data_dir / "msigdb_gmt.pkl", "rb") as handle:
+            _msigdb_gmt_cache = pickle.load(handle)
+    return _msigdb_gmt_cache
+
+
+def _load_public_cells(
+    internal_data_dir: Path = _INTERNAL_DATA_DEFAULT,
+) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, List[str]]:
+    """Lazy: load (annot, log2 expr, pct ranks, gene list) from ``internal_data_dir``."""
+    global _public_cells_cache
+    if _public_cells_cache is None:
+        annot = read_dataset(internal_data_dir / "public_cells_annot.tsv.gz")
+        expr = read_expressions(annot)
+        expr = np.log2(expr + 1)
+        ranked = expr.rank(pct=True)
+        _public_cells_cache = (annot, expr, ranked, expr.index.to_list())
+    return _public_cells_cache
 
 
 def select_runs(
@@ -147,7 +177,7 @@ def get_metric_for_signature(
     verbose: bool = False,
     youden_thr: bool = False,
     sign: str = "",
-) -> pd.Series:
+) -> Dict[str, float]:
     """
     Calculate metrics for a given signature.
 
@@ -184,7 +214,11 @@ def get_metric_for_signature(
     else:
         thr = thresholds[np.argmin(np.sqrt((0 - fpr) ** 2 + (1 - tpr) ** 2))]
     roc_auc = metrics.auc(fpr, tpr)
-    y_pred_bin = pd.cut(y_pred, bins=[-1, thr, 777], labels=[0, 1])
+    # `thr` can be `np.inf` (sklearn's synthetic "reject everything" threshold,
+    # `roc_curve`'s `thresholds[0]`) when that's the optimal operating point on a
+    # degenerate ROC curve (e.g. tiny bootstrap samples) — a fixed-bin `pd.cut`
+    # then breaks on non-monotonic bins. Thresholding directly handles any `thr`.
+    y_pred_bin = (y_pred > thr).astype(int)
     f1 = metrics.f1_score(y_test_bin, y_pred_bin, average="weighted")
     accuracy = metrics.accuracy_score(y_test_bin, y_pred_bin)
     recall_score = metrics.recall_score(y_test_bin, y_pred_bin)
@@ -213,7 +247,13 @@ def get_metric_for_signature(
 
 
 def derive_rank_deviation(
-    control: pd.Series, goi: pd.Series, sign: str, fges: str
+    control: pd.Series,
+    goi: pd.Series,
+    sign: str,
+    fges: str,
+    msigdb_gmt: Optional[Dict[str, Dict[str, Any]]] = None,
+    ranked_expr: Optional[pd.DataFrame] = None,
+    pipeline_genes: Optional[List[str]] = None,
 ) -> Dict[str, float]:
     """
     Calculate the rank deviation for control and goi groups.
@@ -228,12 +268,26 @@ def derive_rank_deviation(
         Signature name.
     fges : str
         Functional gene expression signature (FGES) name.
+    msigdb_gmt : dict, optional
+        ``{Main4_*: {sub_signature: GeneSet}}`` mapping. Loaded lazily from the
+        internal-data mount when None.
+    ranked_expr : pd.DataFrame, optional
+        Gene × sample matrix of percentile ranks. Loaded lazily from the
+        internal-data mount when None.
+    pipeline_genes : list of str, optional
+        Genes available in the expression pipeline. Loaded lazily when None.
 
     Returns
     -------
     dev_dict : dict
         Dictionary with rank deviation metrics for control and goi groups.
     """
+    if msigdb_gmt is None:
+        msigdb_gmt = _load_msigdb_gmt()
+    if ranked_expr is None or pipeline_genes is None:
+        _, _, _ranked, _genes = _load_public_cells()
+        ranked_expr = ranked_expr if ranked_expr is not None else _ranked
+        pipeline_genes = pipeline_genes if pipeline_genes is not None else _genes
     gs = [i for i in msigdb_gmt[sign][fges].genes if i in pipeline_genes]
     goi_ranked_df = ranked_expr[goi.index].loc[gs].T
     control_ranked_df = ranked_expr[control.index].loc[gs].T
@@ -241,20 +295,22 @@ def derive_rank_deviation(
     control_cv = (control_ranked_df.std() / control_ranked_df.mean()).mean()
     goi_std = (goi_ranked_df.std()).mean()
     control_std = (control_ranked_df.std()).mean()
-    dev_dict = {
+    return {
         "goi_cv": goi_cv,
         "control_cv": control_cv,
         "goi_std": goi_std,
         "control_std": control_std,
     }
-    return dev_dict
 
 
-def get_strat_cell_type(control: pd.Series, seed: int) -> Tuple[pd.Series, pd.Series]:
+def get_strat_cell_type(
+    control: pd.Series,
+    seed: int,
+    public_cells_annot: Optional[pd.DataFrame] = None,
+) -> Tuple[pd.Series, pd.Series]:
     """
     Sample a subset of control samples, such that each cell type is
-    represented by at least min_samples samples. The samples are
-    chosen randomly with the given seed.
+    represented by at least min_samples samples.
 
     Parameters
     ----------
@@ -262,6 +318,9 @@ def get_strat_cell_type(control: pd.Series, seed: int) -> Tuple[pd.Series, pd.Se
         Series of control sample names.
     seed : int
         Random seed for sampling.
+    public_cells_annot : pd.DataFrame, optional
+        Annotation indexed by sample with at least a ``Cell_type`` column.
+        Loaded lazily from the internal-data mount when None.
 
     Returns
     -------
@@ -271,9 +330,11 @@ def get_strat_cell_type(control: pd.Series, seed: int) -> Tuple[pd.Series, pd.Se
     cell_types : pd.Series
         Series of cell type labels for the samples in new_control.
     """
+    if public_cells_annot is None:
+        public_cells_annot, _, _, _ = _load_public_cells()
     cell_types = public_cells_annot.Cell_type.reindex(control.index).dropna()
     min_samples = cell_types.value_counts().min()
-    sampled_indices = []
+    sampled_indices: List[Any] = []
     for cell_type in cell_types.unique():
         cell_type_indices = cell_types[cell_types == cell_type].index
         np.random.seed(seed)
